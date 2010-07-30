@@ -8,6 +8,8 @@ use Try::Tiny;
 use Plack::Util::Accessor qw( force no_print_errors );
 
 our $StackTraceClass = "Devel::StackTrace";
+use Carp;
+END { Carp::cluck };
 
 # Optional since it needs PadWalker
 if ($ENV{PLACK_STACKTRACE_LEXICALS} && try { require Devel::StackTrace::WithLexicals; 1 }) {
@@ -20,45 +22,40 @@ sub call {
     my $trace;
     local $SIG{__DIE__} = sub {
         $trace = $StackTraceClass->new;
-        die @_;
     };
 
     my $caught;
     my $res = try { $self->app->($env) } catch { $caught = $_ };
 
     if (ref $res eq 'ARRAY') {
-    if ($trace && ($caught || ($self->force && ref $res eq 'ARRAY' && $res->[0] == 500)) ) {
-        my $text = trace_as_string($trace);
-        $env->{'psgi.errors'}->print($text) unless $self->no_print_errors;
+        if ($trace && ($caught || ($self->force && $res->[0] == 500)) ) {
+            my $text = trace_as_string($trace);
+            $env->{'psgi.errors'}->print($text) unless $self->no_print_errors;
 
-        if (($env->{HTTP_ACCEPT} || '*/*') =~ /html/) {
-            $res = [500, ['Content-Type' => 'text/html; charset=utf-8'], [ utf8_safe($trace->as_html) ]];
+            if (($env->{HTTP_ACCEPT} || '*/*') =~ /html/) {
+                $res = [500, ['Content-Type' => 'text/html; charset=utf-8'], [ utf8_safe($trace->as_html) ]];
+            } else {
+                $res = [500, ['Content-Type' => 'text/plain; charset=utf-8'], [ utf8_safe($text) ]];
+            }
+
+            # break $trace here since $SIG{__DIE__} holds the ref to it, and
+            # $trace has refs to Standalone.pm's args ($conn etc.) and
+            # prevents garbage collection to be happening.
+            undef $trace;
+            return $res;
         } else {
-            $res = [500, ['Content-Type' => 'text/plain; charset=utf-8'], [ utf8_safe($text) ]];
+            return $res;
         }
-
-        # break $trace here since $SIG{__DIE__} holds the ref to it, and
-        # $trace has refs to Standalone.pm's args ($conn etc.) and
-        # prevents garbage collection to be happening.
-        undef $trace;
-        return $res;
-    }
     }
 
     return sub {
         my $respond = shift;
         my $writer;
 
-        my $trace;
-        local $SIG{__DIE__} = sub {
-            #    warn("SIGDIE IN TRACE");
-            #    warn("sigdie $SIG{__DIE__}");
-            $trace = $StackTraceClass->new;
-            #    Carp::cluck ;
-            #    die @_;
-
-            warn("SIGDIE IN TRACE");
+        $SIG{__DIE__} = sub {
             my $caught = $_;
+            warn("i am here, in die handler. i don't want to die.");
+
             if ($writer) {
                 Carp::cluck $_;
                 $writer->close;
@@ -68,14 +65,15 @@ sub call {
                 $respond->($res);
             }
 
-            die @_;
+            warn("now i am back here");
+            undef $@;
         }; 
 
         eval {
-            warn("entering");
-            $res->(sub { return $writer = $respond->(@_) });
-            warn("and back");
+            $res->(sub { warn("subbo"); return $writer = $respond->(@_) });
         };
+        warn("back from eval $@");
+
     }
 }
 
@@ -83,7 +81,6 @@ sub transform_error {
     my ($self, $e, $trace, $env) = @_;
 
     my $text = trace_as_string($trace);
-    #warn($text);
     my $code = 500;
     my $res;
 
