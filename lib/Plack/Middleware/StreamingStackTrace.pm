@@ -18,13 +18,18 @@ if ($ENV{PLACK_STACKTRACE_LEXICALS} && try { require Devel::StackTrace::WithLexi
 sub call {
     my($self, $env) = @_;
 
+    print STDERR "sstrace call\n";
+
     my $trace;
     local $SIG{__DIE__} = sub {
         $trace = $StackTraceClass->new;
     };
 
     my $caught;
-    my $res = try { $self->app->($env) } catch { $caught = $_ };
+    my $res;
+    eval { $res = $self->app->($env) };
+
+    if ($@) { $caught = $@; } 
 
     if (ref $res eq 'ARRAY') {
         if ($trace && ($caught || ($self->force && $res->[0] == 500)) ) {
@@ -53,7 +58,6 @@ sub call {
 
         $SIG{__DIE__} = sub {
             my $caught = $_;
-            warn("i am here, in die handler. i don't want to die.");
 
             if ($writer) {
                 Carp::cluck $_;
@@ -64,14 +68,12 @@ sub call {
                 $respond->($res);
             }
 
-            warn("now i am back here");
             undef $@;
         }; 
 
         eval {
-            $res->(sub { warn("subbo"); return $writer = $respond->(@_) });
+            $res->(sub { return $writer = $respond->(@_) });
         };
-        warn("back from eval $@");
 
     }
 }
